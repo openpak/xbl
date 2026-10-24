@@ -98,6 +98,7 @@ func run(log *slog.Logger) error {
 		MSA:    msa.New(cc, tokens, log, env("XBL_LINK_URL", "https://openpak.org/link")),
 		Auth:   &xauth.Service{Tokens: tokens, Dir: dir, Log: log, Titles: titles, DefaultTitle: env("XBL_DEFAULT_TITLE", "1739375565")},
 	}
+	app.MSA.LinkRedirect = os.Getenv("XBL_LINK_REDIRECT")
 	app.init()
 	handler := &obs.Logger{Log: log, Bodies: os.Getenv("XBL_OBSERVE_BODIES") == "1", Next: app}
 

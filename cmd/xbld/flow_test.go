@@ -282,3 +282,65 @@ func TestInternalApprove(t *testing.T) {
 		t.Fatalf("token after internal approve %d %s", st, b)
 	}
 }
+
+// The internal API's 404 says why: unknown, used (approved, then redeemed) or expired.
+func TestInternalReasons(t *testing.T) {
+	e := newEnv(t)
+	in := httptest.NewServer(e.app.MSA.Internal("k3y"))
+	defer in.Close()
+	reason := func(method, path, body string) (int, string) {
+		req, _ := http.NewRequest(method, in.URL+path, strings.NewReader(body))
+		req.Header.Set("X-Internal-Key", "k3y")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var m map[string]string
+		json.NewDecoder(resp.Body).Decode(&m)
+		return resp.StatusCode, m["reason"]
+	}
+	if st, r := reason("GET", "/internal/v1/link/BBBBBBBB", ""); st != 404 || r != "unknown" {
+		t.Fatalf("unknown: %d %q", st, r)
+	}
+	issue := func() (string, string) {
+		form := url.Values{"client_id": {"000000004426B87D"}, "scope": {"s"}, "response_type": {"device_code"}}
+		_, b := e.do("POST", "login.live.com", "/oauth20_connect.srf", "application/x-www-form-urlencoded", []byte(form.Encode()), nil)
+		var dc map[string]any
+		json.Unmarshal(b, &dc)
+		return dc["user_code"].(string), dc["device_code"].(string)
+	}
+	code, device := issue()
+	if st, _ := reason("POST", "/internal/v1/link/approve", `{"user_code":"`+code+`","account_id":"acct-bob"}`); st != 200 {
+		t.Fatalf("approve %d", st)
+	}
+	if st, r := reason("GET", "/internal/v1/link/"+code, ""); st != 404 || r != "used" {
+		t.Fatalf("approved: %d %q", st, r)
+	}
+	poll := url.Values{"grant_type": {"urn:ietf:params:oauth:grant-type:device_code"}, "device_code": {device}}
+	e.do("POST", "login.live.com", "/oauth20_token.srf", "application/x-www-form-urlencoded", []byte(poll.Encode()), nil)
+	if st, r := reason("POST", "/internal/v1/link/approve", `{"user_code":"`+code+`","account_id":"acct-bob"}`); st != 404 || r != "used" {
+		t.Fatalf("redeemed: %d %q", st, r)
+	}
+	code2, _ := issue()
+	e.app.MSA.Expire(code2)
+	if st, r := reason("GET", "/internal/v1/link/"+code2, ""); st != 404 || r != "expired" {
+		t.Fatalf("expired: %d %q", st, r)
+	}
+}
+
+// With XBL_LINK_REDIRECT set the public page hands over to the website, code and all.
+func TestLinkRedirect(t *testing.T) {
+	e := newEnv(t)
+	e.app.MSA.LinkRedirect = "https://openpak.org/link"
+	rec := httptest.NewRecorder()
+	e.app.MSA.ServeHTTP(rec, httptest.NewRequest("GET", "/link?otc=gj45-s8z2", nil))
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "https://openpak.org/link?code=GJ45S8Z2" {
+		t.Fatalf("redirect %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	rec = httptest.NewRecorder()
+	e.app.MSA.ServeHTTP(rec, httptest.NewRequest("GET", "/link", nil))
+	if rec.Header().Get("Location") != "https://openpak.org/link" {
+		t.Fatalf("bare redirect %q", rec.Header().Get("Location"))
+	}
+}

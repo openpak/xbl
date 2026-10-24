@@ -21,6 +21,7 @@ import (
 	"html/template"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -51,11 +52,31 @@ type Service struct {
 	Tokens  *token.Signer
 	Log     *slog.Logger
 	LinkURL string // shown to the console as verification_uri
+	// LinkRedirect, when set, turns the public /link page into a redirect to
+	// it (the website's page), carrying the code as ?code=.
+	LinkRedirect string
 
 	mu      sync.Mutex
-	pending map[string]*grant // device_code -> grant
-	byUser  map[string]string // user_code -> device_code
+	pending map[string]*grant  // device_code -> grant
+	byUser  map[string]string  // user_code -> device_code
+	ended   map[string]endMark // user_code -> why it stopped (kept endedTTL)
 }
+
+// endMark remembers why a user code stopped being valid, so the approval page
+// can say "expired" or "already used" instead of "unknown".
+type endMark struct {
+	reason string // ReasonExpired or ReasonUsed
+	at     time.Time
+}
+
+// Why a code is not pending (the "reason" field of the internal API's 404).
+const (
+	ReasonUnknown = "unknown"
+	ReasonExpired = "expired"
+	ReasonUsed    = "used"
+)
+
+const endedTTL = time.Hour
 
 type grant struct {
 	userCode, clientID, scope string
@@ -65,7 +86,7 @@ type grant struct {
 
 // New builds the service.
 func New(c Core, t *token.Signer, log *slog.Logger, linkURL string) *Service {
-	return &Service{Core: c, Tokens: t, Log: log, LinkURL: linkURL, pending: map[string]*grant{}, byUser: map[string]string{}}
+	return &Service{Core: c, Tokens: t, Log: log, LinkURL: linkURL, pending: map[string]*grant{}, byUser: map[string]string{}, ended: map[string]endMark{}}
 }
 
 // ServeHTTP routes by path.
@@ -116,6 +137,7 @@ func (s *Service) connect(w http.ResponseWriter, r *http.Request) {
 	}
 	s.pending[device] = g
 	s.byUser[g.userCode] = device
+	delete(s.ended, g.userCode)
 	s.mu.Unlock()
 	s.Log.Info("msa device code issued", "client", g.clientID, "scope", g.scope)
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -131,10 +153,24 @@ func (s *Service) gc() {
 	now := time.Now()
 	for d, g := range s.pending {
 		if now.After(g.exp) {
+			s.end(g, ReasonExpired)
 			delete(s.byUser, g.userCode)
 			delete(s.pending, d)
 		}
 	}
+	for c, m := range s.ended {
+		if now.Sub(m.at) > endedTTL {
+			delete(s.ended, c)
+		}
+	}
+}
+
+// end records why g stopped (caller holds mu).
+func (s *Service) end(g *grant, reason string) {
+	if g.account != "" {
+		reason = ReasonUsed
+	}
+	s.ended[g.userCode] = endMark{reason: reason, at: time.Now()}
 }
 
 func (s *Service) token(w http.ResponseWriter, r *http.Request) {
@@ -148,6 +184,7 @@ func (s *Service) token(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		g, ok := s.pending[dc]
 		if ok && time.Now().After(g.exp) {
+			s.end(g, ReasonExpired)
 			delete(s.byUser, g.userCode)
 			delete(s.pending, dc)
 			ok = false
@@ -155,6 +192,7 @@ func (s *Service) token(w http.ResponseWriter, r *http.Request) {
 		var acct string
 		if ok && g.account != "" {
 			acct = g.account
+			s.end(g, ReasonUsed)
 			delete(s.byUser, g.userCode)
 			delete(s.pending, dc)
 		}
@@ -202,19 +240,41 @@ func (s *Service) issue(w http.ResponseWriter, account, scope string) {
 
 // Approve marks a user code as approved by account (used by the page).
 func (s *Service) Approve(userCode, account string) bool {
-	userCode = strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(userCode), "-", ""))
+	_, reason := s.approve(userCode, account)
+	return reason == ""
+}
+
+// approve is Approve with the reason a code could not be approved.
+func (s *Service) approve(userCode, account string) (*grant, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	d, ok := s.byUser[userCode]
-	if !ok {
-		return false
+	g, reason := s.live(userCode)
+	if g != nil {
+		g.account = account
 	}
-	g := s.pending[d]
-	if g == nil || time.Now().After(g.exp) || g.account != "" {
-		return false
+	return g, reason
+}
+
+func normCode(c string) string {
+	return strings.ToUpper(strings.NewReplacer("-", "", " ", "").Replace(strings.TrimSpace(c)))
+}
+
+// live finds a pending, unapproved code, or says why there is none (caller holds mu).
+func (s *Service) live(userCode string) (*grant, string) {
+	userCode = normCode(userCode)
+	if g := s.pending[s.byUser[userCode]]; g != nil {
+		switch {
+		case g.account != "":
+			return nil, ReasonUsed
+		case time.Now().After(g.exp):
+			return nil, ReasonExpired
+		}
+		return g, ""
 	}
-	g.account = account
-	return true
+	if m, ok := s.ended[userCode]; ok {
+		return nil, m.reason
+	}
+	return nil, ReasonUnknown
 }
 
 // Pending describes a code that is waiting for approval.
@@ -226,18 +286,18 @@ type Pending struct {
 
 // Lookup reports a pending, unapproved code (normalised as Approve does).
 func (s *Service) Lookup(userCode string) (*Pending, bool) {
-	userCode = strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(userCode), "-", ""))
+	p, reason := s.lookup(userCode)
+	return p, reason == ""
+}
+
+func (s *Service) lookup(userCode string) (*Pending, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	d, ok := s.byUser[userCode]
-	if !ok {
-		return nil, false
+	g, reason := s.live(userCode)
+	if g == nil {
+		return nil, reason
 	}
-	g := s.pending[d]
-	if g == nil || time.Now().After(g.exp) || g.account != "" {
-		return nil, false
-	}
-	return &Pending{UserCode: g.userCode, ClientID: g.clientID, ExpiresAt: g.exp.UTC()}, true
+	return &Pending{UserCode: g.userCode, ClientID: g.clientID, ExpiresAt: g.exp.UTC()}, ""
 }
 
 // Internal is the approval API for a trusted front that has already
@@ -247,6 +307,9 @@ func (s *Service) Lookup(userCode string) (*Pending, bool) {
 //	GET  /internal/v1/link/{user_code}            200 {user_code, client_id, expires_at} | 404
 //	POST /internal/v1/link/approve {"user_code","account_id"}
 //	                                               200 {"approved":true,"gamertag"} | 404 | 403 | 400
+//
+// A 404 for a code is {"error":"code_not_found_or_expired","reason":R}, R one
+// of unknown, expired, used (the reason is remembered for an hour).
 func (s *Service) Internal(key string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if key == "" || !hmacEqual(r.Header.Get("X-Internal-Key"), key) {
@@ -269,16 +332,16 @@ func (s *Service) Internal(key string) http.Handler {
 				writeJSON(w, http.StatusForbidden, map[string]string{"error": "account_not_active"})
 				return
 			}
-			if !s.Approve(req.UserCode, req.AccountID) {
-				writeJSON(w, http.StatusNotFound, map[string]string{"error": "code_not_found_or_expired"})
+			if _, reason := s.approve(req.UserCode, req.AccountID); reason != "" {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "code_not_found_or_expired", "reason": reason})
 				return
 			}
 			s.Log.Info("msa device code approved", "via", "internal")
 			writeJSON(w, http.StatusOK, map[string]any{"approved": true, "gamertag": ident.Gamertag(a)})
 		case r.Method == http.MethodGet && strings.HasPrefix(p, "/internal/v1/link/"):
-			pd, ok := s.Lookup(strings.TrimPrefix(p, "/internal/v1/link/"))
-			if !ok {
-				writeJSON(w, http.StatusNotFound, map[string]string{"error": "code_not_found_or_expired"})
+			pd, reason := s.lookup(strings.TrimPrefix(p, "/internal/v1/link/"))
+			if pd == nil {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "code_not_found_or_expired", "reason": reason})
 				return
 			}
 			writeJSON(w, http.StatusOK, pd)
@@ -317,6 +380,19 @@ func (s *Service) link(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'")
 	w.Header().Set("X-Frame-Options", "DENY")
+	if s.LinkRedirect != "" {
+		// The website's page signs the person in with its own session.
+		code := r.URL.Query().Get("otc")
+		if code == "" {
+			code = r.URL.Query().Get("code")
+		}
+		to := s.LinkRedirect
+		if code = normCode(code); code != "" {
+			to += "?code=" + url.QueryEscape(code)
+		}
+		http.Redirect(w, r, to, http.StatusFound)
+		return
+	}
 	if r.Method != http.MethodPost {
 		page.Execute(w, pageData{Code: r.URL.Query().Get("otc")})
 		return
@@ -370,4 +446,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
+}
+
+// Expire ends a code's life now, as if its 15 minutes had passed (tests).
+func (s *Service) Expire(userCode string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if g := s.pending[s.byUser[normCode(userCode)]]; g != nil {
+		g.exp = time.Now().Add(-time.Second)
+	}
 }
