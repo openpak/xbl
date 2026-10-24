@@ -10,6 +10,6 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -buildvcs
 FROM gcr.io/distroless/static
 COPY --from=build /out/xbld /xbld
 USER nonroot:nonroot
-EXPOSE 23500 23501 23502
+EXPOSE 23510 23511 23512
 HEALTHCHECK CMD ["/xbld", "healthcheck"]
 ENTRYPOINT ["/xbld"]

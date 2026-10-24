@@ -39,19 +39,19 @@ state directory.
 
 | Port | Use |
 | --- | --- |
-| 23500 | plain HTTP, for a front that terminates TLS itself |
-| 23501 | TLS (Traefik passes the names through). A ClientHello for a name listed in `XBL_LEGACY` that offers neither ECDHE nor TLS 1.3 (the Xbox 360's XAM) is spliced unchanged to that name's legacy backend |
-| 23502 | `GET /health` |
+| 23510 | plain HTTP, for a front that terminates TLS itself |
+| 23511 | TLS (Traefik passes the names through). A ClientHello for a name listed in `XBL_LEGACY` that offers neither ECDHE nor TLS 1.3 (the Xbox 360's XAM) is spliced unchanged to that name's legacy backend |
+| 23512 | `GET /health` |
 
 ## Configuration
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `XBL_HTTP_ADDR` | `:23500` | plain HTTP listener (`off` disables) |
+| `XBL_HTTP_ADDR` | `:23510` | plain HTTP listener (`off` disables) |
 | `XBL_TLS_ADDR` | unset | TLS listener |
 | `XBL_TLS_CERT`, `XBL_TLS_KEY` | `/app/tls/xbl.pem`, `/app/tls/xbl.key` | leaf (+CA) for the served names |
 | `XBL_LEGACY` | unset | `sni=host:port,...` legacy backends for shared names |
-| `XBL_HEALTH_ADDR` | `:23502` | health listener |
+| `XBL_HEALTH_ADDR` | `:23512` | health listener |
 | `XBL_STATE_DIR` | `/app/state` | token key, XUID map |
 | `XBL_CORE_URL` | `http://openpak-account:20001` | account core gRPC |
 | `XBL_CORE_KEY` | `CORE_INTERNAL_KEY` | account core internal key |

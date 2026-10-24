@@ -47,7 +47,7 @@ func pairs(s string) map[string]string {
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
-		os.Exit(healthcheck(env("XBL_HEALTH_ADDR", "127.0.0.1:23502")))
+		os.Exit(healthcheck(env("XBL_HEALTH_ADDR", "127.0.0.1:23512")))
 	}
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	if err := run(log); err != nil {
@@ -115,7 +115,7 @@ func run(log *slog.Logger) error {
 			}
 		}()
 	}
-	if addr := env("XBL_HTTP_ADDR", ":23500"); addr != "off" {
+	if addr := env("XBL_HTTP_ADDR", ":23510"); addr != "off" {
 		l, err := net.Listen("tcp", addr)
 		if err != nil {
 			return err
@@ -134,7 +134,7 @@ func run(log *slog.Logger) error {
 		cfg := &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}}
 		serve("tls", front.Listen(l, cfg, pairs(os.Getenv("XBL_LEGACY")), log), handler)
 	}
-	hl, err := net.Listen("tcp", env("XBL_HEALTH_ADDR", ":23502"))
+	hl, err := net.Listen("tcp", env("XBL_HEALTH_ADDR", ":23512"))
 	if err != nil {
 		return err
 	}
