@@ -1,0 +1,27 @@
+# Example quadlet for xbl on the primary host. Traefik passes the modern Xbox
+# names (and login.live.com / profile.xboxlive.com, split from the Xbox 360 by
+# ClientHello inside xbl) through to :23501, where xbl terminates TLS.
+[Unit]
+Description=OpenPak xbl (modern Xbox network services)
+After=openpak-account.service
+
+[Container]
+ContainerName=openpak-xbl
+Image=localhost/openpak-xbl:local
+Network=openpak.network
+Volume=openpak-xbl:/app/state:U
+# The leaf for the xbl names, issued by the OpenPak CA (leaf + CA, PEM).
+Volume=%h/openpak/deploy/certs/xbl.pem:/app/tls/xbl.pem:ro
+Volume=%h/openpak/deploy/certs/xbl.key:/app/tls/xbl.key:ro
+EnvironmentFile=%h/openpak/deploy/.env
+Environment=XBL_HTTP_ADDR=:23500 XBL_TLS_ADDR=:23501 XBL_HEALTH_ADDR=:23502 XBL_STATE_DIR=/app/state
+Environment=XBL_CORE_URL=http://openpak-account:20001
+Environment=XBL_LINK_URL=https://openpak.org/link
+Environment=XBL_LEGACY=login.live.com=openpak-x360-xuacs:10443,profile.xboxlive.com=openpak-x360-profile:10442,progress.xboxlive.com=openpak-x360-progress:10441
+HealthCmd=/xbld healthcheck
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target
