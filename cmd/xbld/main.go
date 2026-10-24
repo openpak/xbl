@@ -134,6 +134,18 @@ func run(log *slog.Logger) error {
 		cfg := &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}}
 		serve("tls", front.Listen(l, cfg, pairs(os.Getenv("XBL_LEGACY")), log), handler)
 	}
+	// Private approval API for the website's /link page (never routed publicly).
+	if addr := env("XBL_INTERNAL_ADDR", ":23513"); addr != "off" {
+		ik := env("XBL_INTERNAL_KEY", os.Getenv("WEBSITE_INTERNAL_KEY"))
+		if ik == "" {
+			log.Warn("no XBL_INTERNAL_KEY/WEBSITE_INTERNAL_KEY: the internal approval API refuses every call")
+		}
+		l, err := net.Listen("tcp", addr)
+		if err != nil {
+			return err
+		}
+		serve("internal", l, &obs.Logger{Log: log, Next: app.MSA.Internal(ik)})
+	}
 	hl, err := net.Listen("tcp", env("XBL_HEALTH_ADDR", ":23512"))
 	if err != nil {
 		return err

@@ -15,6 +15,7 @@ package msa
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -215,6 +216,79 @@ func (s *Service) Approve(userCode, account string) bool {
 	g.account = account
 	return true
 }
+
+// Pending describes a code that is waiting for approval.
+type Pending struct {
+	UserCode  string    `json:"user_code"`
+	ClientID  string    `json:"client_id"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// Lookup reports a pending, unapproved code (normalised as Approve does).
+func (s *Service) Lookup(userCode string) (*Pending, bool) {
+	userCode = strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(userCode), "-", ""))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.byUser[userCode]
+	if !ok {
+		return nil, false
+	}
+	g := s.pending[d]
+	if g == nil || time.Now().After(g.exp) || g.account != "" {
+		return nil, false
+	}
+	return &Pending{UserCode: g.userCode, ClientID: g.clientID, ExpiresAt: g.exp.UTC()}, true
+}
+
+// Internal is the approval API for a trusted front that has already
+// signed the person in (the website's /link page). It must only be served
+// on a private listener, and every call needs the internal key:
+//
+//	GET  /internal/v1/link/{user_code}            200 {user_code, client_id, expires_at} | 404
+//	POST /internal/v1/link/approve {"user_code","account_id"}
+//	                                               200 {"approved":true,"gamertag"} | 404 | 403 | 400
+func (s *Service) Internal(key string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if key == "" || !hmacEqual(r.Header.Get("X-Internal-Key"), key) {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+			return
+		}
+		p := r.URL.Path
+		switch {
+		case r.Method == http.MethodPost && p == "/internal/v1/link/approve":
+			var req struct {
+				UserCode  string `json:"user_code"`
+				AccountID string `json:"account_id"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil || req.UserCode == "" || req.AccountID == "" {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "user_code and account_id are required"})
+				return
+			}
+			a, err := s.Core.GetAccount(r.Context(), req.AccountID)
+			if err != nil {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "account_not_active"})
+				return
+			}
+			if !s.Approve(req.UserCode, req.AccountID) {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "code_not_found_or_expired"})
+				return
+			}
+			s.Log.Info("msa device code approved", "via", "internal")
+			writeJSON(w, http.StatusOK, map[string]any{"approved": true, "gamertag": ident.Gamertag(a)})
+		case r.Method == http.MethodGet && strings.HasPrefix(p, "/internal/v1/link/"):
+			pd, ok := s.Lookup(strings.TrimPrefix(p, "/internal/v1/link/"))
+			if !ok {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "code_not_found_or_expired"})
+				return
+			}
+			writeJSON(w, http.StatusOK, pd)
+		default:
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
+		}
+	})
+}
+
+func hmacEqual(a, b string) bool { return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1 }
 
 var page = template.Must(template.New("link").Parse(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">

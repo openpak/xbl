@@ -238,3 +238,47 @@ func TestBadPasswordAndRefresh(t *testing.T) {
 		t.Fatalf("refresh: %d %s", st, b)
 	}
 }
+
+func TestInternalApprove(t *testing.T) {
+	e := newEnv(t)
+	in := httptest.NewServer(e.app.MSA.Internal("k3y"))
+	defer in.Close()
+	form := url.Values{"client_id": {"000000004426B87D"}, "scope": {"s"}, "response_type": {"device_code"}}
+	_, b := e.do("POST", "login.live.com", "/oauth20_connect.srf", "application/x-www-form-urlencoded", []byte(form.Encode()), nil)
+	var dc map[string]any
+	json.Unmarshal(b, &dc)
+	code := dc["user_code"].(string)
+	call := func(method, path, key, body string) (int, map[string]any) {
+		req, _ := http.NewRequest(method, in.URL+path, strings.NewReader(body))
+		if key != "" {
+			req.Header.Set("X-Internal-Key", key)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var m map[string]any
+		json.NewDecoder(resp.Body).Decode(&m)
+		return resp.StatusCode, m
+	}
+	if st, _ := call("GET", "/internal/v1/link/"+code, "wrong", ""); st != 401 {
+		t.Fatalf("wrong key %d", st)
+	}
+	if st, m := call("GET", "/internal/v1/link/"+strings.ToLower(code[:4])+"-"+code[4:], "k3y", ""); st != 200 || m["client_id"] != "000000004426B87D" {
+		t.Fatalf("lookup %d %v", st, m)
+	}
+	if st, _ := call("POST", "/internal/v1/link/approve", "k3y", `{"user_code":"`+code+`","account_id":"acct-nobody"}`); st != 403 {
+		t.Fatalf("inactive account %d", st)
+	}
+	if st, m := call("POST", "/internal/v1/link/approve", "k3y", `{"user_code":"`+code+`","account_id":"acct-bob"}`); st != 200 || m["gamertag"] != "bob" {
+		t.Fatalf("approve %d %v", st, m)
+	}
+	if st, _ := call("POST", "/internal/v1/link/approve", "k3y", `{"user_code":"`+code+`","account_id":"acct-bob"}`); st != 404 {
+		t.Fatalf("second approve %d", st)
+	}
+	poll := url.Values{"grant_type": {"urn:ietf:params:oauth:grant-type:device_code"}, "device_code": {dc["device_code"].(string)}}
+	if st, b := e.do("POST", "login.live.com", "/oauth20_token.srf", "application/x-www-form-urlencoded", []byte(poll.Encode()), nil); st != 200 {
+		t.Fatalf("token after internal approve %d %s", st, b)
+	}
+}
