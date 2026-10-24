@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -136,6 +137,14 @@ var secretKey = regexp.MustCompile(`(?i)token|ticket|password|secret|signature|p
 func Redact(b []byte) string {
 	var v any
 	if json.Unmarshal(b, &v) != nil {
+		if q, err := url.ParseQuery(string(b)); err == nil && strings.Contains(string(b), "=") && !strings.ContainsAny(string(b), " {<") {
+			for k := range q {
+				if secretKey.MatchString(k) || k == "code" || k == "otp" {
+					q[k] = []string{"<redacted>"}
+				}
+			}
+			return q.Encode()
+		}
 		s := string(b)
 		if len(s) > 4096 {
 			s = s[:4096] + "..."
@@ -149,7 +158,7 @@ func Redact(b []byte) string {
 	return string(out)
 }
 
-var longRun = regexp.MustCompile(`[A-Za-z0-9_\-.=+/]{48,}`)
+var longRun = regexp.MustCompile(`[A-Za-z0-9_\-.=+/]{32,}`)
 
 func redact(v any, key string) any {
 	switch t := v.(type) {
