@@ -38,10 +38,7 @@ Listeners, configuration and the example quadlet are in [deploy.md](docs/deploy.
 ## Docs
 
 - [Protocol](docs/protocol.md)
-- [Evidence](docs/evidence.md)
 - [Deploy](docs/deploy.md)
-- [Notes](docs/notes.md)
-- [Provenance](docs/provenance.md)
 
 ## Licence
 
