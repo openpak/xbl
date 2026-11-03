@@ -82,7 +82,11 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	dir, err := ident.Open(cc, state)
+	dsn := os.Getenv("XBL_DATABASE_URL")
+	if dsn == "" {
+		return errors.New("XBL_DATABASE_URL is required (Postgres DSN)")
+	}
+	dir, err := ident.Open(cc, dsn)
 	if err != nil {
 		return err
 	}
@@ -165,7 +169,7 @@ func run(log *slog.Logger) error {
 				s.Shutdown(sctx)
 			}
 			cancel()
-			return dir.Flush()
+			return dir.Close()
 		case err := <-errc:
 			return err
 		case <-tick.C:

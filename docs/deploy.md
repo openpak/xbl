@@ -20,7 +20,8 @@
 | `XBL_HEALTH_ADDR` | `:23512` | health listener |
 | `XBL_INTERNAL_ADDR` | `:23513` | private approval API (`off` disables) |
 | `XBL_INTERNAL_KEY` | `WEBSITE_INTERNAL_KEY` | key the approval API requires |
-| `XBL_STATE_DIR` | `/app/state` | token key, XUID map |
+| `XBL_STATE_DIR` | `/app/state` | token key (a file) |
+| `XBL_DATABASE_URL` | required | Postgres DSN (schema `xbl` of the `xbox` database); holds the XUID map |
 | `XBL_CORE_URL` | `http://openpak-account:20001` | account core gRPC |
 | `XBL_CORE_KEY` | `CORE_INTERNAL_KEY` | account core internal key |
 | `XBL_LINK_URL` | `https://openpak.org/link` | shown to the console as the verification URI |

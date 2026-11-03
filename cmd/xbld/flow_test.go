@@ -15,6 +15,7 @@ import (
 	"github.com/openpak/xbl/internal/core"
 	"github.com/openpak/xbl/internal/ident"
 	"github.com/openpak/xbl/internal/msa"
+	"github.com/openpak/xbl/internal/pgdb"
 	"github.com/openpak/xbl/internal/token"
 	"github.com/openpak/xbl/internal/xauth"
 )
@@ -90,7 +91,7 @@ func newEnv(t *testing.T) *testEnv {
 	fc := newFake()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	tok := token.NewSigner(bytes.Repeat([]byte{7}, 32))
-	dir, err := ident.Open(fc, t.TempDir())
+	dir, err := ident.Open(fc, pgdb.TestDSN(t))
 	if err != nil {
 		t.Fatal(err)
 	}

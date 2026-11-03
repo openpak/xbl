@@ -1,25 +1,25 @@
 // Package ident gives every OpenPak account its modern Xbox identity: an XUID
 // and a gamertag. The XUID is derived from the account id (stable, nothing to
 // provision); the gamertag is the account's handle, else its display name.
-// The reverse map XUID -> account is remembered in a small state file so a
-// friend's XUID handed out once can be resolved again after a restart.
+// The reverse map XUID -> account is remembered in Postgres (schema xbl of the
+// shared "xbox" database) so a friend's XUID handed out once can be resolved
+// again after a restart.
 package ident
 
 import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
+	"log"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/openpak/xbl/internal/core"
+	"github.com/openpak/xbl/internal/pgdb"
 )
 
 // Core is the part of the account core ident needs.
@@ -45,12 +45,12 @@ var ErrUnknown = errors.New("ident: unknown user")
 // Directory resolves identities.
 type Directory struct {
 	core Core
-	path string
+	db   *pgdb.DB
 
 	mu    sync.Mutex
 	byX   map[uint64]string // xuid -> account
 	cache map[string]cached // account -> user
-	dirty bool
+	dirty map[uint64]string // learned but not yet written
 }
 
 type cached struct {
@@ -68,28 +68,49 @@ func XUIDFor(account string) uint64 {
 // XUIDForString is XUIDFor in decimal.
 func XUIDForString(account string) string { return strconv.FormatUint(XUIDFor(account), 10) }
 
-// Open loads (or starts) the reverse map in stateDir.
-func Open(c Core, stateDir string) (*Directory, error) {
-	d := &Directory{core: c, path: filepath.Join(stateDir, "xuids.json"), byX: map[uint64]string{}, cache: map[string]cached{}}
-	b, err := os.ReadFile(d.path)
-	if errors.Is(err, os.ErrNotExist) {
-		return d, nil
-	}
+// Open connects to the Postgres at dsn (schema xbl unless the DSN sets a
+// search_path), creates the table and loads the reverse map.
+func Open(c Core, dsn string) (*Directory, error) {
+	db, err := pgdb.Open(dsn, "xbl", `CREATE TABLE IF NOT EXISTS xuid_map(
+ xuid TEXT PRIMARY KEY, account TEXT NOT NULL, created BIGINT NOT NULL);
+CREATE INDEX IF NOT EXISTS xuid_map_account ON xuid_map(account)`)
 	if err != nil {
 		return nil, err
 	}
-	var m map[string]string
-	if err := json.Unmarshal(b, &m); err != nil {
-		return nil, fmt.Errorf("ident: %s: %w", d.path, err)
+	d := &Directory{core: c, db: db, byX: map[uint64]string{}, cache: map[string]cached{}, dirty: map[uint64]string{}}
+	rows, err := db.Query(`SELECT xuid, account FROM xuid_map`)
+	if err != nil {
+		db.Close()
+		return nil, err
 	}
-	for k, v := range m {
+	defer rows.Close()
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			db.Close()
+			return nil, err
+		}
 		x, err := strconv.ParseUint(k, 10, 64)
 		if err != nil {
-			return nil, fmt.Errorf("ident: %s: bad xuid %q", d.path, k)
+			db.Close()
+			return nil, fmt.Errorf("ident: bad xuid %q in xuid_map", k)
 		}
 		d.byX[x] = v
 	}
+	if err := rows.Err(); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return d, nil
+}
+
+// Close flushes and closes the database.
+func (d *Directory) Close() error {
+	err := d.Flush()
+	if cerr := d.db.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 // ByAccount resolves an account (cached for a minute).
@@ -110,9 +131,15 @@ func (d *Directory) ByAccount(ctx context.Context, account string) (*User, error
 	d.cache[account] = cached{u: u, at: time.Now()}
 	if d.byX[u.XUID] != account {
 		d.byX[u.XUID] = account
-		d.dirty = true
+		d.dirty[u.XUID] = account
 	}
+	learned := len(d.dirty) > 0
 	d.mu.Unlock()
+	if learned {
+		if err := d.Flush(); err != nil {
+			log.Printf("ident: xuid map not saved yet: %v", err) // retried by the next Flush
+		}
+	}
 	return &u, nil
 }
 
@@ -144,28 +171,26 @@ func (d *Directory) ByGamertag(ctx context.Context, tag string) (*User, error) {
 	return d.ByAccount(ctx, acct)
 }
 
-// Flush writes the reverse map when it changed.
+// Flush writes the XUIDs learned since the last successful flush.
 func (d *Directory) Flush() error {
 	d.mu.Lock()
-	if !d.dirty {
-		d.mu.Unlock()
-		return nil
+	pending := make(map[uint64]string, len(d.dirty))
+	for k, v := range d.dirty {
+		pending[k] = v
 	}
-	m := make(map[string]string, len(d.byX))
-	for k, v := range d.byX {
-		m[strconv.FormatUint(k, 10)] = v
-	}
-	d.dirty = false
 	d.mu.Unlock()
-	b, err := json.Marshal(m)
-	if err != nil {
-		return err
+	for x, acct := range pending {
+		if _, err := d.db.Exec(`INSERT INTO xuid_map(xuid,account,created) VALUES(?,?,?)
+ ON CONFLICT(xuid) DO UPDATE SET account=excluded.account`, strconv.FormatUint(x, 10), acct, time.Now().Unix()); err != nil {
+			return err
+		}
+		d.mu.Lock()
+		if d.dirty[x] == acct {
+			delete(d.dirty, x)
+		}
+		d.mu.Unlock()
 	}
-	tmp := d.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, d.path)
+	return nil
 }
 
 // Gamertag picks the public name: the handle, else the display name, else a
