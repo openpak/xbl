@@ -239,3 +239,19 @@ func (h *Hub) Broadcast(match func(uri string) bool, data any) int {
 	}
 	return n
 }
+
+// DropAccount closes every live socket of the account (account erasure) and reports how many.
+func (h *Hub) DropAccount(account string) int {
+	h.mu.Lock()
+	var cs []*Conn
+	for _, c := range h.conns {
+		if c.Caller.Account == account {
+			cs = append(cs, c)
+		}
+	}
+	h.mu.Unlock()
+	for _, c := range cs {
+		c.ws.Close()
+	}
+	return len(cs)
+}

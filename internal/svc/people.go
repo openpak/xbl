@@ -604,3 +604,14 @@ func (p *People) Empty(w http.ResponseWriter, r *http.Request) {
 		p.write(w, http.StatusNotFound, map[string]any{"code": 404})
 	}
 }
+
+// ErasePresence drops the in-memory presence record of xuid (account erasure).
+func (p *People) ErasePresence(xuid uint64) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, ok := p.presence[xuid]; !ok {
+		return 0
+	}
+	delete(p.presence, xuid)
+	return 1
+}

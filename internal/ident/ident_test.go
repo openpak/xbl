@@ -44,3 +44,31 @@ func TestXUIDMapSurvivesRestart(t *testing.T) {
 		t.Fatalf("unknown xuid: %v", err)
 	}
 }
+
+// Erase drops one account's mapping and leaves the others; a second run removes nothing.
+func TestEraseRemovesOnlyThatAccount(t *testing.T) {
+	dsn := pgdb.TestDSN(t)
+	ctx := context.Background()
+	d, err := Open(fakeCore{}, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	a, _ := d.ByAccount(ctx, "acct-a")
+	b, _ := d.ByAccount(ctx, "acct-b")
+	if err := d.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := d.Erase("acct-a"); err != nil || n != 1 {
+		t.Fatalf("n=%d err=%v", n, err)
+	}
+	if _, err := d.ByXUID(ctx, a.XUID); err != ErrUnknown {
+		t.Fatalf("erased xuid still resolves: %v", err)
+	}
+	if got, err := d.ByXUID(ctx, b.XUID); err != nil || got.AccountID != "acct-b" {
+		t.Fatalf("other account touched: %v", err)
+	}
+	if n, err := d.Erase("acct-a"); err != nil || n != 0 {
+		t.Fatalf("second run n=%d err=%v", n, err)
+	}
+}

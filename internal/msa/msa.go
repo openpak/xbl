@@ -456,3 +456,18 @@ func (s *Service) Expire(userCode string) {
 		g.exp = time.Now().Add(-time.Second)
 	}
 }
+
+// EraseAccount drops the pending device-code grants approved for the account (account erasure).
+func (s *Service) EraseAccount(account string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for dc, g := range s.pending {
+		if g.account == account {
+			delete(s.byUser, g.userCode)
+			delete(s.pending, dc)
+			n++
+		}
+	}
+	return n
+}

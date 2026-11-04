@@ -207,3 +207,28 @@ func Gamertag(a *core.Account) string {
 	}
 	return fmt.Sprintf("Player%04X", XUIDFor(a.ID)&0xffff)
 }
+
+// Erase forgets the account (account erasure): its XUID mapping in memory and in Postgres, and
+// the cached user. Idempotent; reports the Postgres rows removed.
+func (d *Directory) Erase(account string) (int, error) {
+	x := XUIDFor(account)
+	d.mu.Lock()
+	for k, v := range d.byX {
+		if v == account {
+			delete(d.byX, k)
+		}
+	}
+	for k, v := range d.dirty {
+		if v == account {
+			delete(d.dirty, k)
+		}
+	}
+	delete(d.cache, account)
+	d.mu.Unlock()
+	res, err := d.db.Exec(`DELETE FROM xuid_map WHERE account=? OR xuid=?`, account, strconv.FormatUint(x, 10))
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}

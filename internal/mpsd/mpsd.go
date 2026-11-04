@@ -856,3 +856,37 @@ func (s *Service) queryHandles(w http.ResponseWriter, r *http.Request, c *Caller
 	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{"results": results})
 }
+
+// EraseAccount removes the account from every session (a session left empty ends) and drops the
+// handles it owns or is invited by (account erasure). It reports the entries removed.
+func (s *Service) EraseAccount(account string, xuid uint64) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.init()
+	n := 0
+	for k, sess := range s.sessions {
+		keep := sess.Members[:0:0]
+		for _, m := range sess.Members {
+			if m.Account == account || m.XUID == xuid {
+				n++
+			} else {
+				keep = append(keep, m)
+			}
+		}
+		if len(keep) != len(sess.Members) {
+			sess.Members = keep
+			sess.ChangeNumber++
+			if len(keep) == 0 {
+				delete(s.sessions, k)
+				n++
+			}
+		}
+	}
+	for id, h := range s.handles {
+		if h.OwnerXUID == xuid || h.Invited == xuid {
+			delete(s.handles, id)
+			n++
+		}
+	}
+	return n
+}

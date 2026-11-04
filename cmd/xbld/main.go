@@ -149,7 +149,7 @@ func run(log *slog.Logger) error {
 		if err != nil {
 			return err
 		}
-		serve("internal", l, &obs.Logger{Log: log, Next: app.MSA.Internal(ik)})
+		serve("internal", l, &obs.Logger{Log: log, Next: eraseHandler(os.Getenv("ACCOUNT_ERASE_KEY"), app.Erase, app.MSA.Internal(ik))})
 	}
 	hl, err := net.Listen("tcp", env("XBL_HEALTH_ADDR", ":23512"))
 	if err != nil {

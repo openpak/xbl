@@ -38,3 +38,11 @@ podman build -t localhost/openpak-xbl:local .
 ```
 
 An example quadlet is in [deploy/openpak-xbl.container](../deploy/openpak-xbl.container).
+
+## Account erasure
+
+`DELETE /internal/accounts/{account_id}/data` with `Authorization: Bearer <ACCOUNT_ERASE_KEY>` on the internal listener
+(`http://openpak-xbl:23513`, never published; not served when `ACCOUNT_ERASE_KEY` is unset or `XBL_INTERNAL_ADDR=off`).
+Reply `{"service":"xbl","rows":N}`. Erased: the `xbl.xuid_map` row(s) of the account, the in-memory XUID map and identity
+cache, presence, MPSD memberships and handles, pending device-code grants, open RTA sockets. Kept: nothing. Tokens are
+stateless and signed; they stop working because the core refuses the account.
